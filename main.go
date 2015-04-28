@@ -76,7 +76,7 @@ func testServiceSpeed(service gas.Service, n int, randomData [][]byte) {
 		r = 2000
 	}
 
-	h := s / 2
+	h := n / 2
 
 	if h < 1 {
 		h = 1
