@@ -9,29 +9,40 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const fsIndexFile string = ".index.json"
-const fsBucketExt string = ".gas"
+const bfsIndexFile string = ".index.json"
+const bfsBucketExt string = ".gas"
 
-type FileService struct {
+type BFileService struct {
 	path          string // Will always terminate with a / and be absolute
 	indexPath     string // The path to the .index.json file ( convenience )
-	initedBuckets map[string]*FileServiceBucket
+	initedBuckets map[string]*BFileServiceBucket
 	Buckets       []string `json:"buckets"`
 }
 
-type FileServiceBucket struct {
-	name     string
-	path     string // Will always terminate with a / and be absolute
-	filePath string // Convenience to path/[name].gas
-	file     *os.File
+type BFileServiceBucket struct {
+	name         string
+	path         string // Will always terminate with a / and be absolute
+	filePath     string // Convenience to path/[name].gas
+	file         *os.File
+	indexPath    string            // path to storage file for byte offsets
+	ByteOffsets  []BFileByteOffset `json:"byteoffsets"`
+	bfsIndexFile *os.File
+	mutex        *sync.Mutex
+	length       int64
 }
 
-// NewFileService expects one argument:
+type BFileByteOffset struct {
+	Line   int64 `json:"line"`
+	Offset int64 `json:"offset"`
+}
+
+// NewBFileService expects one argument:
 // 	- path : The absolute or relative path to the directory for storage.
-func NewFileService(args ...string) (Service, error) {
+func NewBFileService(args ...string) (Service, error) {
 	var err error
 
 	if len(args) < 1 {
@@ -61,20 +72,20 @@ func NewFileService(args ...string) (Service, error) {
 		return nil, fmt.Errorf("Path is not a directory: %s", path)
 	}
 
-	s := FileService{
+	s := BFileService{
 		path:          path,
-		indexPath:     path + fsIndexFile,
-		initedBuckets: make(map[string]*FileServiceBucket),
+		indexPath:     path + bfsIndexFile,
+		initedBuckets: make(map[string]*BFileServiceBucket),
 	}
 
 	// Check to see if we already have an index file.
-	_, err = os.Stat(path + fsIndexFile)
+	_, err = os.Stat(path + bfsIndexFile)
 
 	if err == nil {
-		fileContents, err := ioutil.ReadFile(path + fsIndexFile)
+		fileContents, err := ioutil.ReadFile(path + bfsIndexFile)
 
 		if err != nil {
-			return nil, fmt.Errorf("Error reading index file: %s - %s", path+fsIndexFile, err)
+			return nil, fmt.Errorf("Error reading index file: %s - %s", path+bfsIndexFile, err)
 		}
 
 		json.Unmarshal(fileContents, &s)
@@ -93,7 +104,7 @@ func NewFileService(args ...string) (Service, error) {
 	return &s, nil
 }
 
-func (s *FileService) syncIndex() error {
+func (s *BFileService) syncIndex() error {
 	indexJson, err := json.Marshal(&s)
 
 	err = ioutil.WriteFile(s.indexPath, indexJson, 0644)
@@ -101,7 +112,7 @@ func (s *FileService) syncIndex() error {
 	return err
 }
 
-func (s *FileService) GetBucket(name string) (Bucket, error) {
+func (s *BFileService) GetBucket(name string) (Bucket, error) {
 	var err error
 
 	name = strings.ToLower(name)
@@ -118,19 +129,18 @@ func (s *FileService) GetBucket(name string) (Bucket, error) {
 		}
 	}
 
-	b := FileServiceBucket{
-		name:     name,
-		path:     s.path,
-		filePath: s.path + name + fsBucketExt,
+	b := BFileServiceBucket{
+		name:      name,
+		path:      s.path,
+		filePath:  s.path + name + bfsBucketExt,
+		indexPath: s.path + name + bfsBucketExt + bfsIndexFile,
+		mutex:     &sync.Mutex{},
 	}
 
 	if !bucketExists {
 		s.Buckets = append(s.Buckets, b.name)
 		s.syncIndex()
 	}
-
-	// Check if file already exists.
-	_, err = os.Stat(b.filePath)
 
 	b.file, err = os.OpenFile(b.filePath, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0644)
 
@@ -140,36 +150,73 @@ func (s *FileService) GetBucket(name string) (Bucket, error) {
 
 	b.file.Sync()
 
+	length, err := b.GetLength()
+
+	if err != nil {
+		return nil, fmt.Errorf("Could not initialize Bucket - cannot get length! %s", err)
+	}
+
+	b.length = int64(length)
+
+	_, err = os.Stat(b.filePath + bfsIndexFile)
+
+	if err == nil {
+		fileContents, err := ioutil.ReadFile(b.filePath + bfsIndexFile)
+
+		if err != nil {
+			return nil, fmt.Errorf("Error reading index file: %s - %s", b.filePath+bfsIndexFile, err)
+		}
+
+		json.Unmarshal(fileContents, &b)
+	} else {
+		b.ByteOffsets = make([]BFileByteOffset, 0)
+		b.syncIndex()
+	}
+
 	s.initedBuckets[b.name] = &b
 
 	return &b, nil
 }
 
-func (b *FileServiceBucket) PushItem(bytes []byte) error {
+func (b *BFileServiceBucket) syncIndex() error {
+	indexJson, err := json.Marshal(&b)
+
+	err = ioutil.WriteFile(b.filePath+bfsIndexFile, indexJson, 0644)
+
+	return err
+}
+
+func (b *BFileServiceBucket) PushItem(bytes []byte) error {
 	var err error
 
 	bytes = append(bytes, []byte("\r\n")...)
 
 	bytes = append([]byte(strconv.FormatInt(time.Now().UnixNano(), 10)+" "), bytes...)
 
+	b.mutex.Lock()
+
 	_, err = b.file.Write(bytes)
+
+	b.length++
+
+	if b.length%10000 == 0 {
+		offset, err := b.file.Seek(0, 1)
+		if err == nil {
+			b.ByteOffsets = append(b.ByteOffsets, BFileByteOffset{Line: b.length, Offset: offset})
+			b.syncIndex()
+		}
+	}
+
+	b.mutex.Unlock()
 
 	if err != nil {
 		return err
 	}
 
-	/*
-		err = b.file.Sync()
-
-		if err != nil {
-			return err
-		}
-	*/
-
 	return nil
 }
 
-func (b *FileServiceBucket) GetLength() (int, error) {
+func (b *BFileServiceBucket) GetLength() (int, error) {
 	file, err := os.Open(b.filePath)
 	defer file.Close()
 
@@ -187,11 +234,11 @@ func (b *FileServiceBucket) GetLength() (int, error) {
 	return n, nil
 }
 
-func (b *FileServiceBucket) GetName() string {
+func (b *BFileServiceBucket) GetName() string {
 	return b.name
 }
 
-func (b *FileServiceBucket) GetFirstItems(n ...int) ([]Item, error) {
+func (b *BFileServiceBucket) GetFirstItems(n ...int) ([]Item, error) {
 	// Offset & number to retrieve
 	offset := 0
 	length := 0
@@ -213,11 +260,29 @@ func (b *FileServiceBucket) GetFirstItems(n ...int) ([]Item, error) {
 		return items, err
 	}
 
+	fileOffset := int64(0)
+	lineOffset := int64(0)
+
+	for _, byteOffset := range b.ByteOffsets {
+		if byteOffset.Line < int64(offset) {
+			fileOffset = int64(byteOffset.Offset)
+			lineOffset = int64(byteOffset.Line)
+		} else {
+			break
+		}
+	}
+
+	_, err = file.Seek(fileOffset, 0)
+
+	if err != nil {
+		return items, err
+	}
+
 	scanner := bufio.NewScanner(file)
-	i := 0
+	i := lineOffset
 
 	for scanner.Scan() {
-		if i >= offset && i < (offset+length) {
+		if i >= int64(offset) && i < (int64(offset)+int64(length)) {
 			item, err := parseLineItem(scanner.Text())
 
 			if err != nil {
@@ -225,6 +290,8 @@ func (b *FileServiceBucket) GetFirstItems(n ...int) ([]Item, error) {
 			}
 
 			items = append(items, item)
+		} else if i >= (int64(offset) + int64(length)) {
+			break
 		}
 
 		i++
@@ -237,7 +304,7 @@ func (b *FileServiceBucket) GetFirstItems(n ...int) ([]Item, error) {
 // Should be replaced with a custom scanner that goes from the end of a file
 // towards the beginning.
 // i.e. https://code.google.com/p/rog-go/source/browse/reverse/scan.go
-func (b *FileServiceBucket) GetLastItems(n ...int) ([]Item, error) {
+func (b *BFileServiceBucket) GetLastItems(n ...int) ([]Item, error) {
 	offset := 0
 	length := 0
 
@@ -258,24 +325,31 @@ func (b *FileServiceBucket) GetLastItems(n ...int) ([]Item, error) {
 		return items, err
 	}
 
-	// We just create a throwaway scanner to count lines:
-	// https://groups.google.com/d/msg/golang-nuts/_eqP4nU4Cjw/wtWj4_S0WJwJ
-	lengthScanner := bufio.NewScanner(file)
+	l := b.length
 
-	l := 0
+	fileOffset := int64(0)
+	lineOffset := int64(0)
 
-	for lengthScanner.Scan() {
-		l++
+	for _, byteOffset := range b.ByteOffsets {
+		if byteOffset.Line < int64((l - (int64(offset) + int64(length)))) {
+			fileOffset = int64(byteOffset.Offset)
+			lineOffset = int64(byteOffset.Line)
+		} else {
+			break
+		}
 	}
 
-	file.Seek(0, 0)
+	_, err = file.Seek(fileOffset, 0)
+
+	if err != nil {
+		return items, err
+	}
 
 	scanner := bufio.NewScanner(file)
-
-	i := 0
+	i := lineOffset
 
 	for scanner.Scan() {
-		if i >= (l-(offset+length)) && i < (l-offset) {
+		if i >= int64((l-(int64(offset)+int64(length)))) && i < int64(int64(l)-int64(offset)) {
 			item, err := parseLineItem(scanner.Text())
 
 			if err != nil {
@@ -291,6 +365,7 @@ func (b *FileServiceBucket) GetLastItems(n ...int) ([]Item, error) {
 	return items, nil
 }
 
+/*
 func parseLineItem(line string) (Item, error) {
 	n := strings.Index(line, " ")
 
@@ -309,9 +384,13 @@ func parseLineItem(line string) (Item, error) {
 
 	return Item{timestamp, []byte(byteString)}, nil
 }
+*/
 
-func (b *FileServiceBucket) RemoveAllItems() error {
+func (b *BFileServiceBucket) RemoveAllItems() error {
 	err := b.file.Truncate(0)
+
+	b.ByteOffsets = make([]BFileByteOffset, 0)
+	b.syncIndex()
 
 	// The only err that can realistically occur is *PathError -
 	// Since we've already validated the path it's highly unlikely to occur. :)

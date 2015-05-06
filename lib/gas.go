@@ -27,5 +27,9 @@ func NewService(s string, args ...string) (Service, error) {
 		return NewFileService(args...)
 	}
 
+	if s == "bfile" {
+		return NewBFileService(args...)
+	}
+
 	return nil, fmt.Errorf("Service not recognized: %s", s)
 }

@@ -19,6 +19,10 @@ func main() {
 	testSizes := []int{512, 1024, 2048, 4096}
 	testLengths := []int{1000, 5000, 10000, 50000, 100000, 500000, 1000000}
 
+	// Temporary Override
+	testSizes = []int{128} //, 256, 512}
+	testLengths = []int{1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000, 10000000}
+
 	for _, s := range testSizes {
 		fmt.Printf("%d ... ", s)
 		randomData[s] = make([][]byte, 0)
@@ -39,20 +43,66 @@ func main() {
 
 	for _, s := range testSizes {
 		for _, length := range testLengths {
-			testServiceSpeed(fileService, length, randomData[s])
+			writeDuration, readDuration := testServiceSpeed(fileService, length, randomData[s])
+			fmt.Printf("\n- - - - - - - - - - - - - - - - - - - - - - - - - - - - \n")
+			fmt.Printf("File service: %d items @ %d bytes -> %s / %s \n\n", length, s, writeDuration, readDuration)
 		}
 	}
 
 	fileTestDuration := time.Since(fileTestStartTime)
 
+	fmt.Printf("* * * * * * * * * * * * * \n\n\n\n")
 	fmt.Printf("All file tests ( including random data generation ): %s\n", fileTestDuration)
+	fmt.Printf("\n\n\n* * * * * * * * * * * * * \n")
+
+	fileServiceBucket, err := fileService.GetBucket("test1")
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fileServiceBucket.RemoveAllItems()
+
+	bfileTestStartTime := time.Now()
+
+	bfileService, err := gas.NewService("bfile", []string{"test/"}...)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, s := range testSizes {
+		for _, length := range testLengths {
+			writeDuration, readDuration := testServiceSpeed(bfileService, length, randomData[s])
+			fmt.Printf("\n- - - - - - - - - - - - - - - - - - - - - - - - - - - - \n")
+			fmt.Printf("BFile service: %d items @ %d bytes -> %s / %s \n\n", length, s, writeDuration, readDuration)
+		}
+	}
+
+	bfileTestDuration := time.Since(bfileTestStartTime)
+
+	fmt.Printf("* * * * * * * * * * * * * \n\n\n\n")
+	fmt.Printf("All bfile tests ( including random data generation ): %s\n", bfileTestDuration)
+	fmt.Printf("\n\n\n* * * * * * * * * * * * * \n")
+
+	bfileServiceBucket, err := bfileService.GetBucket("test1")
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bfileServiceBucket.RemoveAllItems()
 
 }
 
 // n = number of items in a bucket
 // s = size of item data in bytes
-func testServiceSpeed(service gas.Service, n int, randomData [][]byte) {
+func testServiceSpeed(service gas.Service, n int, randomData [][]byte) (writeDuration, readDuration time.Duration) {
 	var err error
+
+	if n < 500 {
+		log.Fatal("That test isn't worth running: n must be >= 500.")
+	}
 
 	s := len(randomData[0])
 
@@ -64,22 +114,22 @@ func testServiceSpeed(service gas.Service, n int, randomData [][]byte) {
 
 	b.RemoveAllItems()
 
+	// r = Number of items we will fetch at a time in read tests.
 	r := n / 10
 
-	// Can't make the test too easy...
-	if r < 5 {
-		r = 5
-	}
-
-	// But, we don't want to spend all day.
 	if r > 2000 {
 		r = 2000
 	}
 
-	h := n / 2
+	// Number of fetch tests to run ( x2 - first and last )
+	q := n / r
 
-	if h < 1 {
-		h = 1
+	if q < 1 {
+		q = 1
+	}
+
+	if q > 20 {
+		q = 20
 	}
 
 	fmt.Printf("Pushing %d items (%d bytes) to %s -> ", n, s, b.GetName())
@@ -89,36 +139,35 @@ func testServiceSpeed(service gas.Service, n int, randomData [][]byte) {
 		b.PushItem(randomData[rand.Intn(len(randomData))])
 	}
 	duration := time.Since(startTime)
+	writeDuration = duration
 	fmt.Printf("Result: %s \n", duration)
 
-	fmt.Printf("Fetching %d first items -> ", r)
-	startTime = time.Now()
-	_, _ = b.GetFirstItems(r)
-	duration = time.Since(startTime)
-	fmt.Printf("Result: %s \n", duration)
+	// startAllReadTime := time.Now()
 
-	fmt.Printf("Fetching %d first items (offset %d) -> ", r, h)
-	startTime = time.Now()
-	_, _ = b.GetFirstItems(r, h)
-	duration = time.Since(startTime)
-	fmt.Printf("Result: %s \n", duration)
+	for i := 0; i < q; i++ {
+		// Offset
+		o := i * (n / q)
 
-	fmt.Printf("Fetching %d last items -> ", r)
-	startTime = time.Now()
-	_, _ = b.GetLastItems(r)
-	duration = time.Since(startTime)
-	fmt.Printf("Result: %s \n", duration)
+		//fmt.Printf("%d Items @ %d Bytes / Fetching %d first items (offset %d) -> ", n, s, r, o)
+		//startTime = time.Now()
+		_, _ = b.GetFirstItems(r, o)
+		//duration = time.Since(startTime)
+		//fmt.Printf("Result: %s \n", duration)
 
-	fmt.Printf("Fetching %d last items (offset %d) -> ", r, h)
-	startTime = time.Now()
-	_, _ = b.GetLastItems(r, h)
-	duration = time.Since(startTime)
-	fmt.Printf("Result: %s \n", duration)
+		//fmt.Printf("%d Items @ %d Bytes / Fetching %d  last items (offset %d) -> ", n, s, r, o)
+		//startTime = time.Now()
+		_, _ = b.GetLastItems(r, o)
+		//duration = time.Since(startTime)
+		//fmt.Printf("Result: %s \n", duration)
+	}
+
+	// readDuration = time.Since(startAllReadTime)
 
 	duration = time.Since(startAllTime)
 
 	fmt.Printf("Total time for %d items (%d bytes) : %s\n\n", n, s, duration)
 
+	return
 }
 
 func generateBytes(length int) []byte {
