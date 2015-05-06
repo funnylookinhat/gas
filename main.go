@@ -1,12 +1,17 @@
 package main
 
 import (
-	"./lib"
 	"fmt"
+	"github.com/funnylookinhat/gas/lib"
 	"log"
 	"math/rand"
 	"time"
 )
+
+type GasTest struct {
+	bytes  int
+	length int
+}
 
 // Make sure you've got at least 5 GBs of free space before running this.
 // Also - please ask your HDD for forgiveness.
@@ -35,7 +40,7 @@ func main() {
 
 	fileTestStartTime := time.Now()
 
-	fileService, err := gas.NewService("file", []string{"test/"}...)
+	fileService, err := gas.NewService("file", []string{"test/file/"}...)
 
 	if err != nil {
 		log.Fatal(err)
@@ -65,7 +70,7 @@ func main() {
 
 	bfileTestStartTime := time.Now()
 
-	bfileService, err := gas.NewService("bfile", []string{"test/"}...)
+	bfileService, err := gas.NewService("bfile", []string{"test/bfile/"}...)
 
 	if err != nil {
 		log.Fatal(err)
@@ -128,8 +133,8 @@ func testServiceSpeed(service gas.Service, n int, randomData [][]byte) (writeDur
 		q = 1
 	}
 
-	if q > 20 {
-		q = 20
+	if q > 100 {
+		q = 100
 	}
 
 	fmt.Printf("Pushing %d items (%d bytes) to %s -> ", n, s, b.GetName())
@@ -142,7 +147,7 @@ func testServiceSpeed(service gas.Service, n int, randomData [][]byte) (writeDur
 	writeDuration = duration
 	fmt.Printf("Result: %s \n", duration)
 
-	// startAllReadTime := time.Now()
+	startAllReadTime := time.Now()
 
 	for i := 0; i < q; i++ {
 		// Offset
@@ -161,7 +166,7 @@ func testServiceSpeed(service gas.Service, n int, randomData [][]byte) (writeDur
 		//fmt.Printf("Result: %s \n", duration)
 	}
 
-	// readDuration = time.Since(startAllReadTime)
+	readDuration = time.Since(startAllReadTime)
 
 	duration = time.Since(startAllTime)
 
