@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"github.com/funnylookinhat/gas/lib"
 	"log"
@@ -8,27 +9,99 @@ import (
 	"time"
 )
 
-type GasTest struct {
-	bytes  int
-	length int
+type Benchmark struct {
+	service       gas.Service
+	description   string
+	tests         []BenchmarkTest
+	writeDuration time.Duration
+	readDuration  time.Duration
+}
+
+type BenchmarkTest struct {
+	bytes         int
+	length        int
+	writeDuration time.Duration
+	readDuration  time.Duration
 }
 
 // Make sure you've got at least 5 GBs of free space before running this.
 // Also - please ask your HDD for forgiveness.
 func main() {
 
+	var quick string
+	flag.StringVar(&quick, "quick", "", "Whether or not to run a faster set of tests.")
+	flag.Parse()
+
+	smallByteSizes := []int{128, 256, 512}
+	smallByteLengths := []int{1000, 5000, 10000, 50000, 100000, 500000}
+
+	largeByteSizes := []int{1024, 2048, 4096}
+	largeByteLengths := []int{1000, 5000, 10000}
+
+	// Temporary overrides
+	if quick == "yes" {
+		fmt.Printf("Running shortened test suite ...\n")
+		smallByteSizes = []int{128, 256, 512}
+		smallByteLengths = []int{1000, 5000, 10000}
+		largeByteSizes = []int{1024}
+		largeByteLengths = []int{1000}
+	} else {
+		fmt.Printf("Running full test suite - to check only a subset of tests run with --quick=yes\n")
+	}
+
+	benchmarks := make([]Benchmark, 0)
+
+	fileService, err := gas.NewService("file", []string{"test/file/"}...)
+
+	if err != nil {
+		log.Fatalf("Error creating file service: %s", err)
+	}
+
+	benchmarks = append(benchmarks, Benchmark{
+		service:     fileService,
+		description: "File",
+		tests:       make([]BenchmarkTest, 0),
+	})
+
+	bfileService, err := gas.NewService("bfile", []string{"test/bfile/"}...)
+
+	if err != nil {
+		log.Fatalf("Error creating bfile service: %s", err)
+	}
+
+	benchmarks = append(benchmarks, Benchmark{
+		service:     bfileService,
+		description: "BFile",
+		tests:       make([]BenchmarkTest, 0),
+	})
+
+	for i, _ := range benchmarks {
+		// Small byte tests up to 10,000,000 items.
+		for _, s := range smallByteSizes {
+			for _, l := range smallByteLengths {
+				benchmarks[i].tests = append(benchmarks[i].tests, BenchmarkTest{
+					bytes:  s,
+					length: l,
+				})
+			}
+		}
+
+		// Large byte tests up to 100,000 items.
+		for _, s := range largeByteSizes {
+			for _, l := range largeByteLengths {
+				benchmarks[i].tests = append(benchmarks[i].tests, BenchmarkTest{
+					bytes:  s,
+					length: l,
+				})
+			}
+		}
+	}
+
 	fmt.Printf("Generating random data... ")
 
 	randomData := make(map[int][][]byte)
 
-	testSizes := []int{512, 1024, 2048, 4096}
-	testLengths := []int{1000, 5000, 10000, 50000, 100000, 500000, 1000000}
-
-	// Temporary Override
-	testSizes = []int{128} //, 256, 512}
-	testLengths = []int{1000, 5000, 10000, 50000, 100000, 500000, 1000000, 5000000, 10000000}
-
-	for _, s := range testSizes {
+	for _, s := range []int{128, 256, 512, 1024, 2048, 4096} {
 		fmt.Printf("%d ... ", s)
 		randomData[s] = make([][]byte, 0)
 		for i := 0; i < 100; i++ {
@@ -38,83 +111,55 @@ func main() {
 
 	fmt.Printf("done!\n")
 
-	fileTestStartTime := time.Now()
+	fmt.Printf("Running tests...\n")
 
-	fileService, err := gas.NewService("file", []string{"test/file/"}...)
+	for i, b := range benchmarks {
+		fmt.Printf("\nRunning Service Tests: %s\n", b.description)
 
-	if err != nil {
-		log.Fatal(err)
-	}
+		benchmarks[i].readDuration = time.Since(time.Now())
+		benchmarks[i].writeDuration = time.Since(time.Now())
 
-	for _, s := range testSizes {
-		for _, length := range testLengths {
-			writeDuration, readDuration := testServiceSpeed(fileService, length, randomData[s])
-			fmt.Printf("\n- - - - - - - - - - - - - - - - - - - - - - - - - - - - \n")
-			fmt.Printf("File service: %d items @ %d bytes -> %s / %s \n\n", length, s, writeDuration, readDuration)
+		for j, t := range b.tests {
+			fmt.Printf("  -> %d Lines @ %d Bytes ... ", t.length, t.bytes)
+			w, r, err := testServiceSpeed(b.service, t.length, randomData[t.bytes])
+			if err != nil {
+				log.Fatal(err)
+			}
+			benchmarks[i].tests[j].readDuration = r
+			benchmarks[i].tests[j].writeDuration = w
+
+			benchmarks[i].readDuration += r
+			benchmarks[i].writeDuration += w
+
+			fmt.Printf("write: %s , read: %s", benchmarks[i].tests[j].writeDuration, benchmarks[i].tests[j].readDuration)
+
+			fmt.Printf("\n")
 		}
 	}
 
-	fileTestDuration := time.Since(fileTestStartTime)
+	fmt.Printf("\n")
 
-	fmt.Printf("* * * * * * * * * * * * * \n\n\n\n")
-	fmt.Printf("All file tests ( including random data generation ): %s\n", fileTestDuration)
-	fmt.Printf("\n\n\n* * * * * * * * * * * * * \n")
-
-	fileServiceBucket, err := fileService.GetBucket("test1")
-
-	if err != nil {
-		log.Fatal(err)
+	for _, b := range benchmarks {
+		fmt.Printf("%s Total write: %s , read: %s \n", b.description, b.writeDuration, b.readDuration)
 	}
 
-	fileServiceBucket.RemoveAllItems()
-
-	bfileTestStartTime := time.Now()
-
-	bfileService, err := gas.NewService("bfile", []string{"test/bfile/"}...)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, s := range testSizes {
-		for _, length := range testLengths {
-			writeDuration, readDuration := testServiceSpeed(bfileService, length, randomData[s])
-			fmt.Printf("\n- - - - - - - - - - - - - - - - - - - - - - - - - - - - \n")
-			fmt.Printf("BFile service: %d items @ %d bytes -> %s / %s \n\n", length, s, writeDuration, readDuration)
-		}
-	}
-
-	bfileTestDuration := time.Since(bfileTestStartTime)
-
-	fmt.Printf("* * * * * * * * * * * * * \n\n\n\n")
-	fmt.Printf("All bfile tests ( including random data generation ): %s\n", bfileTestDuration)
-	fmt.Printf("\n\n\n* * * * * * * * * * * * * \n")
-
-	bfileServiceBucket, err := bfileService.GetBucket("test1")
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	bfileServiceBucket.RemoveAllItems()
-
+	return
 }
 
 // n = number of items in a bucket
 // s = size of item data in bytes
-func testServiceSpeed(service gas.Service, n int, randomData [][]byte) (writeDuration, readDuration time.Duration) {
-	var err error
-
+func testServiceSpeed(service gas.Service, n int, randomData [][]byte) (writeDuration, readDuration time.Duration, err error) {
 	if n < 500 {
-		log.Fatal("That test isn't worth running: n must be >= 500.")
+		err = fmt.Errorf("That test isn't worth running: n must be >= 500.")
+		return
 	}
 
-	s := len(randomData[0])
+	// s := len(randomData[0])
 
 	b, err := service.GetBucket("test1")
 
 	if err != nil {
-		log.Fatal(err)
+		return
 	}
 
 	b.RemoveAllItems()
@@ -122,55 +167,30 @@ func testServiceSpeed(service gas.Service, n int, randomData [][]byte) (writeDur
 	// r = Number of items we will fetch at a time in read tests.
 	r := n / 10
 
-	if r > 2000 {
-		r = 2000
+	if r > 500 {
+		r = 500
 	}
 
 	// Number of fetch tests to run ( x2 - first and last )
-	q := n / r
+	q := 1000
 
-	if q < 1 {
-		q = 1
-	}
-
-	if q > 100 {
-		q = 100
-	}
-
-	fmt.Printf("Pushing %d items (%d bytes) to %s -> ", n, s, b.GetName())
-	startTime := time.Now()
-	startAllTime := startTime
+	startWriteTime := time.Now()
 	for i := 0; i < n; i++ {
 		b.PushItem(randomData[rand.Intn(len(randomData))])
 	}
-	duration := time.Since(startTime)
-	writeDuration = duration
-	fmt.Printf("Result: %s \n", duration)
+	writeDuration = time.Since(startWriteTime)
 
-	startAllReadTime := time.Now()
-
+	startReadTime := time.Now()
 	for i := 0; i < q; i++ {
 		// Offset
 		o := i * (n / q)
-
-		//fmt.Printf("%d Items @ %d Bytes / Fetching %d first items (offset %d) -> ", n, s, r, o)
-		//startTime = time.Now()
 		_, _ = b.GetFirstItems(r, o)
-		//duration = time.Since(startTime)
-		//fmt.Printf("Result: %s \n", duration)
-
-		//fmt.Printf("%d Items @ %d Bytes / Fetching %d  last items (offset %d) -> ", n, s, r, o)
-		//startTime = time.Now()
 		_, _ = b.GetLastItems(r, o)
-		//duration = time.Since(startTime)
-		//fmt.Printf("Result: %s \n", duration)
 	}
 
-	readDuration = time.Since(startAllReadTime)
+	readDuration = time.Since(startReadTime)
 
-	duration = time.Since(startAllTime)
-
-	fmt.Printf("Total time for %d items (%d bytes) : %s\n\n", n, s, duration)
+	b.RemoveAllItems()
 
 	return
 }
