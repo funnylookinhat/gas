@@ -400,6 +400,8 @@ func (b *BFileServiceBucket) RemoveAllItems() error {
 
 	err = b.file.Sync()
 
+	b.length = 0
+
 	if err != nil {
 		return err
 	}
