@@ -6,6 +6,7 @@ import (
 	"github.com/funnylookinhat/gas/lib"
 	"log"
 	"math/rand"
+	"os"
 	"time"
 )
 
@@ -49,9 +50,12 @@ func main() {
 		fmt.Printf("Running full test suite - to check only a subset of tests run with --quick=yes\n")
 	}
 
+	_ = os.MkdirAll("gastest/file", 0755)
+	_ = os.MkdirAll("gastest/bfile", 0755)
+
 	benchmarks := make([]Benchmark, 0)
 
-	fileService, err := gas.NewService("file", []string{"test/file/"}...)
+	fileService, err := gas.NewService("file", []string{"gastest/file/"}...)
 
 	if err != nil {
 		log.Fatalf("Error creating file service: %s", err)
@@ -63,7 +67,7 @@ func main() {
 		tests:       make([]BenchmarkTest, 0),
 	})
 
-	bfileService, err := gas.NewService("bfile", []string{"test/bfile/"}...)
+	bfileService, err := gas.NewService("bfile", []string{"gastest/bfile/"}...)
 
 	if err != nil {
 		log.Fatalf("Error creating bfile service: %s", err)
