@@ -29,25 +29,25 @@ type BenchmarkTest struct {
 // Also - please ask your HDD for forgiveness.
 func main() {
 
-	var quick string
-	flag.StringVar(&quick, "quick", "", "Whether or not to run a faster set of tests.")
+	var full string
+	flag.StringVar(&full, "full", "", "Whether or not to run a faster set of tests.")
 	flag.Parse()
 
 	smallByteSizes := []int{128, 256, 512}
-	smallByteLengths := []int{1000, 5000, 10000, 50000, 100000, 500000}
+	smallByteLengths := []int{1000, 5000, 10000}
 
-	largeByteSizes := []int{1024, 2048, 4096}
-	largeByteLengths := []int{1000, 5000, 10000}
+	largeByteSizes := []int{1024}
+	largeByteLengths := []int{1000}
 
 	// Temporary overrides
-	if quick == "yes" {
+	if full == "yes" {
 		fmt.Printf("Running shortened test suite ...\n")
 		smallByteSizes = []int{128, 256, 512}
-		smallByteLengths = []int{1000, 5000, 10000}
-		largeByteSizes = []int{1024}
-		largeByteLengths = []int{1000}
+		smallByteLengths = []int{1000, 5000, 10000, 50000, 100000, 500000}
+		largeByteSizes = []int{1024, 2048, 4096}
+		largeByteLengths = []int{1000, 5000, 10000}
 	} else {
-		fmt.Printf("Running full test suite - to check only a subset of tests run with --quick=yes\n")
+		fmt.Printf("Running quick test suite - to run full test pass --full=yes\n")
 	}
 
 	_ = os.MkdirAll("gastest/file", 0755)
